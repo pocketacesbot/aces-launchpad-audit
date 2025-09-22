@@ -1,5 +1,31 @@
 ## Aces.fun
 
+### Overview
+
+The **AcesFactory** contract is the core of the Aces.fun platform - a bonding curve-based token launchpad that enables users to create and trade tokens with mathematical pricing curves before they graduate to decentralized exchanges.
+
+#### Key Features:
+
+- **Token Creation**: Creates clones of `AcesLaunchpadToken` using OpenZeppelin's minimal proxy pattern for gas-efficient deployment
+- **Bonding Curves**: Supports quadratic and linear pricing curves that determine token prices based on supply
+- **Trading System**: Enables buying and selling tokens on the bonding curve with automatic price discovery
+- **Graduation Mechanism**: Automatically enables transfers and renounces ownership when tokens reach their bonding threshold
+- **Fee Management**: Configurable protocol and subject fees with automatic distribution
+- **DEX Integration**: Built-in Aerodrome router integration for creating liquidity pairs upon graduation
+- **Upgradeable Architecture**: Uses UUPS proxy pattern for contract upgrades while maintaining state
+
+#### How It Works:
+
+1. Users call `createToken()` to deploy a new launchpad token with specified bonding curve parameters
+2. Tokens start paused and can only be traded through the factory's bonding curve
+3. As users buy tokens, the price increases according to the mathematical curve (quadratic or linear)
+4. When the token reaches its `tokensBondedAt` threshold, it "graduates":
+   - Transfers are enabled
+   - Ownership is renounced to make it fully decentralized
+   - Can be listed on DEXs via the integrated Aerodrome router
+
+The factory uses ACES tokens as the base currency for all trades and accumulates them for each token's liquidity pool.
+
 ### Install
 
 ```shell
