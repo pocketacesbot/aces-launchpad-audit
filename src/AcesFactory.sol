@@ -1,0 +1,548 @@
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.20;
+
+import {FixedMath} from "./FixedMath.sol";
+
+import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
+import {OwnableUpgradeable} from "openzeppelin-contracts-upgradeable/contracts/access/OwnableUpgradeable.sol";
+import {Initializable} from "openzeppelin-contracts-upgradeable/contracts/proxy/utils/Initializable.sol";
+import {UUPSUpgradeable} from "openzeppelin-contracts-upgradeable/contracts/proxy/utils/UUPSUpgradeable.sol";
+
+import {AcesToken} from "./AcesToken.sol";
+import {AcesLaunchpadToken} from "./AcesLaunchpadToken.sol";
+
+interface IERC20 {
+    function transfer(address to, uint256 value) external returns (bool);
+    function transferFrom(address from, address to, uint256 value) external returns (bool);
+    function balanceOf(address owner) external view returns (uint256);
+    function totalSupply() external view returns (uint256);
+    function approve(address spender, uint256 value) external returns (bool);
+}
+
+interface IAerodromeRouter {
+    function quoteAddLiquidity(
+        address tokenA,
+        address tokenB,
+        bool stable,
+        uint amountADesired,
+        uint amountBDesired
+    ) external view returns (uint amountA, uint amountB, uint liquidity);
+
+    function addLiquidity(
+        address tokenA,
+        address tokenB,
+        bool stable,
+        uint amountADesired,
+        uint amountBDesired,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB, uint liquidity);
+}
+
+/**
+ * @title Aces Vault
+ * @dev A contract for creating and managing tokens for trading keys with various curves.
+ */
+contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
+    using FixedMath for int256;
+
+    address public protocolFeeDestination;
+    uint256 public protocolFeePercent;
+    uint256 public subjectFeePercent;
+    address public aerodromeRouterAddress;
+    address public tokenImplementation;
+    address public acesTokenAddress;
+
+    enum Curves {
+        Quadratic,
+        Linear
+    }
+
+    struct Token {
+        Curves curve;
+        address tokenAddress;
+        uint256 floor;
+        uint256 steepness;
+        uint256 acesTokenBalance;
+        address subjectFeeDestination;
+        uint256 tokensBondedAt;
+        bool tokenBonded;
+    }
+
+    mapping(address tokenAddress => Token token) public tokens;
+    mapping(address => mapping(address => bool)) private sellApprovals;
+
+    event BondedToken(address tokenAddress, uint256 totalSupply);
+
+    event CreatedToken(
+        address tokenAddress,
+        uint8 curve,
+        uint256 steepness,
+        uint256 floor
+    );
+
+    event Trade(
+        address tokenAddress,
+        bool isBuy,
+        uint256 tokenAmount,
+        uint256 acesAmount,
+        uint256 protocolAcesAmount,
+        uint256 subjectAcesAmount,
+        uint256 supply
+    );
+
+    event FeeDestinationChanged(address newDestination);
+    event ProtocolFeePercentChanged(uint256 newPercent);
+    event SubjectFeePercentChanged(uint256 newPercent);
+    event AerodromeRouterAddressChanged(address newAddress);
+
+    event SellApprovalChanged(
+        address indexed seller,
+        address indexed operator,
+        bool approved
+    );
+
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    /**
+     * @dev Initializes the contract.
+     * @param initialOwner The address to be set as the initial owner.
+     */
+    function initialize(address initialOwner) public initializer {
+        __Ownable_init(initialOwner);
+        __UUPSUpgradeable_init();
+
+        // Set default values for protocol and subject fees
+        protocolFeePercent = 500000000000000; // 0.5%
+        subjectFeePercent = 500000000000000; // 0.5%
+        aerodromeRouterAddress = 0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43;
+    }
+
+    /**
+     * @dev Checks whether the upgrade is authorized.
+     * @param newImplementation The address of the new implementation.
+     */
+    function _authorizeUpgrade(
+        address newImplementation
+    ) internal override onlyOwner {}
+
+    /**
+     * @dev Sets the address of the Aces token.
+     * @param _acesTokenAddress The address of the Aces token contract.
+     */
+    function setAcesTokenAddress(address _acesTokenAddress) public onlyOwner {
+        require(_acesTokenAddress != address(0), "Invalid address");
+        acesTokenAddress = _acesTokenAddress;
+    }
+
+    /**
+     * @dev Set the Aerodrome router address. Only callable by the owner.
+     * @param _router The new router address.
+     */
+    function setAerodromeRouterAddress(address _router) external onlyOwner {
+        require(_router != address(0), "Invalid address");
+        aerodromeRouterAddress = _router;
+        emit AerodromeRouterAddressChanged(_router);
+    }
+
+    /**
+     * @dev Sets the implementation address for the token clones.
+     * @param impl The address of the token implementation contract.
+     */
+    function setTokenImplementation(address impl) external onlyOwner {
+        require(impl != address(0), "Invalid impl");
+        tokenImplementation = impl;
+    }
+
+    /**
+     * @dev Creates a new token for trading shares with the specified bonding curve.
+     * @param curve The curve type for price calculation.
+     * @param steepness The steepness parameter for the curve.
+     * @param floor The floor price for the shares.
+     * @return token The index of the created token.
+     */
+    function createToken(
+        Curves curve,
+        uint256 steepness,
+        uint256 floor,
+        string memory name,
+        string memory symbol,
+        string memory salt,
+        uint256 tokensBondedAt
+    ) public returns (address) {
+        require(steepness >= 1, "Invalid steepness value");
+        require(steepness <= 10_000_000_000_000_000, "Invalid steepness value");
+        require(floor <= 1_000_000_000, "Invalid floor value");
+        require(acesTokenAddress != address(0), "Aces token address not set");
+        require(tokensBondedAt >= 1 ether, "Invalid tokensBondedAt value");
+        require(tokenImplementation != address(0), "Token implementation not set");
+        
+        bytes32 saltPacked = keccak256(abi.encodePacked(salt, msg.sender));
+        address tokenAddress = Clones.cloneDeterministic(tokenImplementation, saltPacked);
+        // initialize clone
+        AcesLaunchpadToken(tokenAddress).initialize(name, symbol, msg.sender, tokensBondedAt);
+
+        Token storage r = tokens[tokenAddress];
+        r.tokenAddress = tokenAddress;
+        r.curve = curve;
+        r.steepness = steepness;
+        r.floor = floor;
+        r.acesTokenBalance = 0;
+        r.subjectFeeDestination = msg.sender;
+        r.tokenBonded = false;
+        r.tokensBondedAt = tokensBondedAt;
+        
+        emit CreatedToken(
+            tokenAddress,
+            uint8(curve),
+            steepness,
+            floor
+        );
+
+        return tokenAddress;
+    }
+
+    /**
+     * @dev Sets the address where protocol fees will be sent.
+     * @param feeDestination The address to set as the fee destination.
+     */
+    function setProtocolFeeDestination(address feeDestination) public onlyOwner {
+        require(feeDestination != address(0), "Invalid address");
+        protocolFeeDestination = feeDestination;
+        emit FeeDestinationChanged(feeDestination);
+    }
+
+    /**
+     * @dev Sets the percentage of protocol fees.
+     * @param feePercent The percentage of protocol fees to set.
+     */
+    function setProtocolFeePercent(uint256 feePercent) public onlyOwner {
+        require(feePercent <= 500000000000000000, "Invalid fee percent"); // max 50%
+        protocolFeePercent = feePercent;
+        emit ProtocolFeePercentChanged(feePercent);
+    }
+
+    /**
+     * @dev Sets the percentage of subject fees.
+     * @param feePercent The percentage of subject fees to set.
+     */
+    function setSubjectFeePercent(uint256 feePercent) public onlyOwner {
+        require(feePercent <= 500000000000000000, "Invalid fee percent"); // max 50%
+        subjectFeePercent = feePercent;
+        emit SubjectFeePercentChanged(feePercent);
+    }
+
+    /**
+     * @dev Withdraws all ETH from the contract to the owner's address.
+     */
+    function withdrawETH() external onlyOwner {
+        payable(owner()).transfer(address(this).balance);
+    }
+
+    /**
+     * @dev Withdraws all ACES from the contract to the owner's address.
+     */
+    function withdrawACES(address tokenAddress) external onlyOwner {
+        require(acesTokenAddress != address(0), "Aces token address not set");
+        require(tokenAddress != address(0), "Invalid token address");
+        Token storage token = tokens[tokenAddress];
+        uint256 balance = token.acesTokenBalance;
+        require(balance > 0, "No ACES to withdraw");
+        token.acesTokenBalance = 0;
+        require(IERC20(acesTokenAddress).transfer(owner(), balance), "ACES transfer failed");
+    }
+
+    /**
+     * @dev Calculates the price for a quadratic curve given the supply, amount, steepness, and floor price.
+     * @param supply The current supply of shares.
+     * @param amount The amount of shares to buy.
+     * @param steepness The steepness parameter for the curve.
+     * @param floor The floor price for the shares.
+     * @return price The total price for the shares.
+     */
+    function getPriceQuadratic(
+        uint256 supply,
+        uint256 amount,
+        uint256 steepness,
+        uint256 floor
+    ) public pure returns (uint256 price) {
+        uint256 sum1 = ((supply - 1) * (supply) * (2 * (supply - 1) + 1)) / 6;
+        uint256 sum2 = ((supply - 1 + amount) * (supply + amount) * (2 * (supply - 1 + amount) + 1)) / 6;
+        uint256 summation = sum2 - sum1;
+        return (summation * 1 ether) / steepness + (floor * amount);
+    }
+
+    /**
+     * @dev Calculates the price for a linear curve given the supply, amount, steepness, and floor price.
+     * @param supply The current supply of shares.
+     * @param amount The amount of shares to buy.
+     * @param steepness The steepness parameter for the curve.
+     * @param floor The floor price for the shares.
+     * @return price The total price for the shares.
+     */
+    function getPriceLinear(
+        uint256 supply,
+        uint256 amount,
+        uint256 steepness,
+        uint256 floor
+    ) public pure returns (uint256 price) {
+        uint256 sum1 = (supply - 1) * supply;
+        uint256 sum2 = (supply - 1 + amount) * (supply + amount);
+        uint256 summation = sum2 - sum1;
+        return (summation * 1 ether) / (steepness / 50) + (floor * amount);
+    }
+
+    /**
+     * @dev Calculates the price for buying or selling shares based on the specified parameters.
+     * @param tokenAddress The address of the token.
+     * @param amount The amount of shares to buy or sell.
+     * @param isBuy A boolean indicating whether the transaction is a buy or sell.
+     * @return price The calculated price for the shares.
+     */
+    function getPrice(
+        address tokenAddress,
+        uint256 amount,
+        bool isBuy
+    ) public view returns (uint256 price) {
+        AcesLaunchpadToken launchPadToken = AcesLaunchpadToken(tokenAddress);
+        uint256 totalSupply = launchPadToken.totalSupply();
+
+        amount = amount / 1 ether;
+        totalSupply = totalSupply / 1 ether;
+
+        Token storage r = tokens[tokenAddress];
+        uint256 supply = isBuy ? totalSupply : totalSupply - amount;
+        uint256 floor = r.floor;
+        uint256 steepness = r.steepness;
+
+        if (tokens[tokenAddress].curve == Curves.Quadratic) {
+            return getPriceQuadratic(supply, amount, steepness, floor);
+        } else if (tokens[tokenAddress].curve == Curves.Linear) {
+            return getPriceLinear(supply, amount, steepness, floor);
+        } 
+    }
+
+    /**
+     * @dev Calculates the buy price for shares based on the specified parameters.
+     * @param tokenAddress The address of the shares subject.
+     * @param amount The amount of shares to buy.
+     * @return price The calculated buy price for the shares.
+     */
+    function getBuyPrice(
+        address tokenAddress,
+        uint256 amount
+    ) public view returns (uint256 price) {
+        return getPrice(tokenAddress, amount, true);
+    }
+
+    /**
+     * @dev Calculates the sell price for shares based on the specified parameters.
+     * @param tokenAddress The address of the shares subject.
+     * @param amount The amount of shares to sell.
+     * @return price The calculated sell price for the shares.
+     */
+    function getSellPrice(
+        address tokenAddress,
+        uint256 amount
+    ) public view returns (uint256 price) {
+        return getPrice(tokenAddress, amount, false);
+    }
+
+    /**
+     * @dev Calculates the buy price for tokens after applying protocol and subject fees.
+     * @param tokenAddress The address of the token contract.
+     * @param amount The amount of tokens to buy.
+     * @return price The calculated buy price for the tokens after fees.
+     */
+    function getBuyPriceAfterFee(
+        address tokenAddress,
+        uint256 amount
+    ) public view returns (uint256 price) {
+        uint256 buyPrice = getBuyPrice(tokenAddress, amount);
+        uint256 protocolFee = (buyPrice * protocolFeePercent) / 1 ether;
+        uint256 subjectFee = (buyPrice * subjectFeePercent) / 1 ether;
+        return buyPrice + protocolFee + subjectFee;
+    }
+
+    /**
+     * @dev Calculates the sell price for tokens after applying protocol and subject fees.
+     * @param tokenAddress The address of the token contract.
+     * @param amount The amount of tokens to sell.
+     * @return price The calculated sell price for the tokens after fees.
+     */
+    function getSellPriceAfterFee(
+        address tokenAddress,
+        uint256 amount
+    ) public view returns (uint256 price) {
+        uint256 sellPrice = getSellPrice(tokenAddress, amount);
+        uint256 protocolFee = (sellPrice * protocolFeePercent) / 1 ether;
+        uint256 subjectFee = (sellPrice * subjectFeePercent) / 1 ether;
+        return sellPrice - protocolFee - subjectFee;
+    }
+
+    /**
+     * @dev Allows a user to buy tokens.
+     * @param tokenAddress The address of the token to buy.
+     * @param amount The amount of tokens to buy.
+     */
+    function buyTokens(
+        address tokenAddress,
+        uint256 amount,
+        uint256 acesAmountIn
+    ) public {
+        require(amount > 0, "Invalid amount");
+        require(tokenAddress != address(0), "Invalid address");
+
+        uint256 price = getPrice(tokenAddress, amount, true);
+        uint256 protocolFee = (price * protocolFeePercent) / 1 ether;
+        uint256 subjectFee = (price * subjectFeePercent) / 1 ether;
+
+        AcesLaunchpadToken launchPadToken = AcesLaunchpadToken(tokenAddress);
+        uint256 totalSupply = launchPadToken.totalSupply();
+
+        Token storage token = tokens[tokenAddress];
+        token.acesTokenBalance += price;
+
+        require(!token.tokenBonded, "Token is bonded, cannot buy more");
+
+        
+
+        // Transfer Aces tokens from user to contract
+        IERC20 acesToken = IERC20(acesTokenAddress);
+        require(
+            acesToken.transferFrom(msg.sender, address(this), acesAmountIn),
+            "Aces token transfer to bonding curve contract failed"
+        );
+
+        require(
+            acesAmountIn >= price + protocolFee + subjectFee,
+            "Did not send enough Aces tokens"
+        );
+
+        // Mint launchpad tokens to user        
+        launchPadToken.mint(msg.sender, amount);
+
+        emit Trade(
+            tokenAddress,
+            true,
+            amount,
+            price,
+            protocolFee,
+            subjectFee,
+            totalSupply + amount
+        );
+
+        if (protocolFee > 0 && protocolFeeDestination != address(0)) {
+            require(
+                acesToken.transfer(protocolFeeDestination, protocolFee),
+                "Aces token transfer to protocol failed"
+            );
+        }
+
+        if (subjectFee > 0 && token.subjectFeeDestination != address(0)) {
+            require(
+                acesToken.transfer(token.subjectFeeDestination, subjectFee),
+                "Aces token transfer to subject failed"
+            );
+        }
+
+        // Refund any excess Aces tokens to user
+        if (acesAmountIn > price + protocolFee + subjectFee) {
+            require(
+                acesToken.transfer(
+                    msg.sender,
+                    acesAmountIn - price - protocolFee - subjectFee
+                ),
+                "Aces token refund transfer failed"
+            );
+        }
+
+        if (!token.tokenBonded && totalSupply + amount >= token.tokensBondedAt) {
+            token.tokenBonded = true;
+            launchPadToken.setTransfersEnabled(true);
+            launchPadToken.renounceOwnership();
+            emit BondedToken(tokenAddress, totalSupply + amount);
+        }
+    }
+
+    /**
+     * @dev Allows a user to sell tokens.
+     * @param tokenAddress The address of the token to sell.
+     * @param amount The amount of tokens to sell.
+     */
+    function sellTokens(
+        address tokenAddress,
+        uint256 amount
+    ) public payable {
+        require(amount > 0, "Invalid amount");
+        require(tokenAddress != address(0), "Invalid address");
+
+        // Transfer Aces tokens from contract to user
+        IERC20 acesToken = IERC20(acesTokenAddress);
+        AcesLaunchpadToken launchPadToken = AcesLaunchpadToken(tokenAddress);
+        
+        require(
+            launchPadToken.balanceOf(msg.sender) >= amount,
+            "Insufficient token balance"
+        );
+
+        // token owner cant sell last token. Always needs to have 1 token for bonding curve to work
+        if (msg.sender == launchPadToken.owner()) {
+            require(
+                launchPadToken.balanceOf(msg.sender) - amount > 0,
+                "Cannot sell the last token"
+            );
+        }
+
+        uint256 totalSupply = launchPadToken.totalSupply();
+
+        uint256 price = getPrice(tokenAddress, amount, false);
+        uint256 protocolFee = (price * protocolFeePercent) / 1 ether;
+        uint256 subjectFee = (price * subjectFeePercent) / 1 ether;
+
+        Token storage token = tokens[tokenAddress];
+        token.acesTokenBalance -= price;
+
+        require(!token.tokenBonded, "Token is bonded, cannot sell");
+
+        // Burn tokens from user
+        launchPadToken.burnFrom(msg.sender, amount);
+
+        emit Trade(
+            tokenAddress,
+            false,
+            amount,
+            price,
+            protocolFee,
+            subjectFee,
+            totalSupply - amount
+        );
+
+        require(
+            acesToken.transfer(
+                msg.sender,
+                price - protocolFee - subjectFee
+            ),
+            "Aces token transfer failed"
+        );
+
+        if (protocolFee > 0 && protocolFeeDestination != address(0)) {
+            require(
+                acesToken.transfer(protocolFeeDestination, protocolFee),
+                "Aces token transfer to protocol failed"
+            );
+        }
+
+        if (subjectFee > 0 && token.subjectFeeDestination != address(0)) {
+            require(
+                acesToken.transfer(token.subjectFeeDestination, subjectFee),
+                "Aces token transfer to subject failed"
+            );
+        }
+    }
+}
