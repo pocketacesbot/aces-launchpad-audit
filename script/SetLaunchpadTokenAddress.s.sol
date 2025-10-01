@@ -22,7 +22,7 @@ contract SetTokenAddress is Script {
         address token = vm.envAddress(tokenEnv);
         console.log("Token Address:", token);
 
-        string memory launchpadTokenEnv = string(abi.encodePacked("LAUNCHED_TOKEN_IMPLEMENTATION_", network));
+        string memory launchpadTokenEnv = string(abi.encodePacked("LAUNCHPAD_TOKEN_IMPLEMENTATION_", network));
         address launchpadToken = vm.envAddress(launchpadTokenEnv);
         console.log("Launchpad Token Address:", launchpadToken);
 

@@ -1,20 +1,31 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity >=0.8.13;
 
-import {Initializable} from "openzeppelin-contracts-upgradeable/contracts/proxy/utils/Initializable.sol";
-import {ERC20Upgradeable} from "openzeppelin-contracts-upgradeable/contracts/token/ERC20/ERC20Upgradeable.sol";
-import {OwnableUpgradeable} from "openzeppelin-contracts-upgradeable/contracts/access/OwnableUpgradeable.sol";
-import {PausableUpgradeable} from "openzeppelin-contracts-upgradeable/contracts/utils/PausableUpgradeable.sol";
+import {ERC20} from "openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
+import {Ownable} from "openzeppelin-contracts/contracts/access/Ownable.sol";
+import {Pausable} from "openzeppelin-contracts/contracts/utils/Pausable.sol";
 
-contract AcesLaunchpadToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, PausableUpgradeable {
+contract AcesLaunchpadToken is ERC20, Ownable, Pausable {
     uint256 public constant MAX_TOTAL_SUPPLY = 1_000_000_000 ether; // 1 billion tokens
 
     uint256 public tokensBondedAt;
     address public subjectFeeDestination;
-
-    /// @custom:oz-upgrades-unsafe-allow constructor
-    constructor() {
-        _disableInitializers();
+    
+    // Track if this instance has been initialized (for clone pattern)
+    bool private _initialized;
+    
+    // Per-clone name and symbol overrides
+    string private _nameOverride;
+    string private _symbolOverride;
+    
+    /// @dev Implementation constructor - deploy with empty metadata and renounce ownership immediately.
+    constructor() ERC20("", "") Ownable(msg.sender) {
+        // Mark implementation initialized so it cannot be re-used directly.
+        _initialized = true;
+        // Pause implementation to prevent accidental transfers.
+        _pause();
+        // Implementation should not retain an owner; renounce to avoid misuse.
+        _transferOwnership(address(0));
     }
 
     function initialize(
@@ -22,16 +33,22 @@ contract AcesLaunchpadToken is Initializable, ERC20Upgradeable, OwnableUpgradeab
         string memory _symbol,
         address _subjectFeeDestination,
         uint256 _tokensBondedAt
-    ) public initializer {
-        __ERC20_init(_name, _symbol);
-        __Ownable_init(msg.sender); // factory
-        __Pausable_init();
+    ) public {
+        require(!_initialized, "Already initialized");
+        _initialized = true;
+        
+        // Set clone-specific name and symbol
+        _nameOverride = _name;
+        _symbolOverride = _symbol;
 
         tokensBondedAt = _tokensBondedAt;
         subjectFeeDestination = _subjectFeeDestination;
 
-        // mint initial supply to user that created the clone
-        _mint(_subjectFeeDestination, 1 ether);
+        // Set clone owner (factory or end-user depending on factory logic)
+        _transferOwnership(msg.sender);
+
+    // mint initial supply to beneficiary/subject
+    _mint(_subjectFeeDestination, 1 ether);
 
         // start paused by default
         _pause();
@@ -73,6 +90,21 @@ contract AcesLaunchpadToken is Initializable, ERC20Upgradeable, OwnableUpgradeab
         require(this.totalSupply() + amount <= MAX_TOTAL_SUPPLY, "Total supply exceeded");
 
         _mint(to, amount);
+    }
+
+    // Override name and symbol functions to return clone-specific values
+    function name() public view override returns (string memory) {
+        if (bytes(_nameOverride).length > 0) {
+            return _nameOverride;
+        }
+        return super.name();
+    }
+
+    function symbol() public view override returns (string memory) {
+        if (bytes(_symbolOverride).length > 0) {
+            return _symbolOverride;
+        }
+        return super.symbol();
     }
 }
 

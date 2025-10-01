@@ -50,7 +50,7 @@ contract FactoryTest is Test {
         uint256 amount = 10_000 ether;
 
         address tokenAddress = factory.createToken(AcesFactory.Curves.Quadratic, CURVE_STEEPNESS, 0, "Aces Launchpad Token", "ACLP", "my-salt", 10_000 ether);
-        AcesToken launchpadToken = AcesToken(tokenAddress);
+        AcesLaunchpadToken launchpadToken = AcesLaunchpadToken(tokenAddress);
 
         vm.startPrank(alice);
 
@@ -74,8 +74,7 @@ contract FactoryTest is Test {
         uint256 amount = 10_000 ether;
 
         address tokenAddress = factory.createToken(AcesFactory.Curves.Quadratic, CURVE_STEEPNESS, 0, "Aces Launchpad Token", "ACLP", "my-salt", 100_000 ether);
-
-        AcesToken launchpadToken = AcesToken(tokenAddress);
+        AcesLaunchpadToken launchpadToken = AcesLaunchpadToken(tokenAddress);
 
         vm.startPrank(alice);
 
@@ -99,7 +98,6 @@ contract FactoryTest is Test {
         uint256 amount = 10_000 ether;
 
         address tokenAddress = factory.createToken(AcesFactory.Curves.Quadratic, CURVE_STEEPNESS, 0, "Aces Launchpad Token", "ACLP", "my-salt", 100_000 ether);
-
         AcesLaunchpadToken launchpadToken = AcesLaunchpadToken(tokenAddress);
 
         vm.startPrank(alice);
@@ -137,26 +135,27 @@ contract FactoryTest is Test {
         assertEq(launchpadToken.owner(), address(factory));
     }
 
-    function test_WithdrawAces() public {
+    function test_WithdrawAcesNoBuys() public {
         uint256 amount = 10_000 ether;
 
         // Alice creates token
         vm.startPrank(alice);
-        address tokenAddress = factory.createToken(AcesFactory.Curves.Quadratic, CURVE_STEEPNESS, 0, "Aces Launchpad Token", "ACLP", "my-salt", 100_000 ether);
-        AcesToken launchpadToken = AcesToken(tokenAddress);
+        address tokenAddress = factory.createToken(AcesFactory.Curves.Quadratic, CURVE_STEEPNESS, 0, "Aces Launchpad Token", "ACLP", "my-salt", amount);
+        AcesLaunchpadToken launchpadToken = AcesLaunchpadToken(tokenAddress);
         vm.stopPrank();
+
 
         // Bob buys 10,000 tokens
         vm.startPrank(bob);
         uint256 cost = factory.getBuyPriceAfterFee(tokenAddress, amount);
         uint256 costMinusFee = factory.getPrice(tokenAddress, amount, true);
+
         acesToken.approve(address(factory), cost);
         factory.buyTokens(tokenAddress, amount, cost);
         uint256 balance = launchpadToken.balanceOf(address(bob));
         assertEq(balance, amount);
         vm.stopPrank();
 
-        assertEq(launchpadToken.owner(), address(factory));
         assertEq(acesToken.balanceOf(address(factory)), costMinusFee);
         assertEq(factory.owner(), address(owner));
 
@@ -175,17 +174,17 @@ contract FactoryTest is Test {
 
         // Alice creates token
         vm.startPrank(alice);
-        address tokenAddress = factory.createToken(AcesFactory.Curves.Quadratic, CURVE_STEEPNESS, 0, "Aces Launchpad Token", "ACLP", "my-salt", 50_000 ether);
-        AcesToken launchpadToken = AcesToken(tokenAddress);
+        address tokenAddress = factory.createToken(AcesFactory.Curves.Quadratic, CURVE_STEEPNESS, 0, "Aces Launchpad Token", "ACLP", "my-salt", amount);
+        AcesLaunchpadToken launchpadToken = AcesLaunchpadToken(tokenAddress);
         vm.stopPrank();
 
-        // Bob buys 10,000 tokens
+        // Bob buys 6,000 tokens
         vm.startPrank(bob);
-        uint256 cost = factory.getBuyPriceAfterFee(tokenAddress, amount);
+        uint256 cost = factory.getBuyPriceAfterFee(tokenAddress, 6_000 ether);
         acesToken.approve(address(factory), cost);
-        factory.buyTokens(tokenAddress, amount, cost);
+        factory.buyTokens(tokenAddress, 6_000 ether, cost);
         uint256 balance = launchpadToken.balanceOf(address(bob));
-        assertEq(balance, amount);
+        assertEq(balance, 6_000 ether);
         vm.stopPrank();
 
         // Bob sells 5,000 tokens
@@ -193,7 +192,7 @@ contract FactoryTest is Test {
         uint256 sellAmount = 5_000 ether;
         factory.sellTokens(tokenAddress, sellAmount);
         balance = launchpadToken.balanceOf(address(bob));
-        assertEq(balance, amount - sellAmount);
+        assertEq(balance, 1_000 ether);
         vm.stopPrank();
 
         // Charlie buys 2,000 tokens
@@ -206,10 +205,12 @@ contract FactoryTest is Test {
         assertEq(balance, charlieBuyAmount);
         vm.stopPrank();
 
-        // Bob sells another 2,000 tokens
+        // Bob buys 7,000 tokens
         vm.startPrank(bob);
-        uint256 bobSecondSellAmount = 2_000 ether;
-        factory.sellTokens(tokenAddress, bobSecondSellAmount);
+        uint256 bobSecondBuyAmount = 7_000 ether;
+        uint256 bobSecondCost = factory.getBuyPriceAfterFee(tokenAddress, bobSecondBuyAmount);
+        acesToken.approve(address(factory), bobSecondCost);
+        factory.buyTokens(tokenAddress, bobSecondBuyAmount, bobSecondCost);
         balance = launchpadToken.balanceOf(address(bob));
         vm.stopPrank();
 
@@ -227,7 +228,7 @@ contract FactoryTest is Test {
         // Alice creates token
         vm.startPrank(alice);
         address tokenAddress = factory.createToken(AcesFactory.Curves.Quadratic, CURVE_STEEPNESS, 0, "Aces Launchpad Token", "ACLP", "my-salt", 100_000 ether);
-        AcesToken launchpadToken = AcesToken(tokenAddress);
+        AcesLaunchpadToken launchpadToken = AcesLaunchpadToken(tokenAddress);
         vm.stopPrank();
 
         // Bob buys 10,000 tokens
@@ -256,7 +257,7 @@ contract FactoryTest is Test {
         // Alice creates token
         vm.startPrank(alice);
         address tokenAddress = factory.createToken(AcesFactory.Curves.Quadratic, CURVE_STEEPNESS, 0, "Aces Launchpad Token", "ACLP", "my-salt", 10_000 ether);
-        AcesToken launchpadToken = AcesToken(tokenAddress);
+        AcesLaunchpadToken launchpadToken = AcesLaunchpadToken(tokenAddress);
         vm.stopPrank();
 
         // Bob buys 10,000 tokens
@@ -274,6 +275,7 @@ contract FactoryTest is Test {
         vm.expectRevert("Token is bonded, cannot buy more");
         factory.buyTokens(tokenAddress, 2_000 ether, cost);
         vm.stopPrank();
+
     }
 
     function test_TestBondingAndSell() public {
@@ -282,8 +284,12 @@ contract FactoryTest is Test {
         // Alice creates token
         vm.startPrank(alice);
         address tokenAddress = factory.createToken(AcesFactory.Curves.Quadratic, CURVE_STEEPNESS, 0, "Aces Launchpad Token", "ACLP", "my-salt", 10_000 ether);
-        AcesToken launchpadToken = AcesToken(tokenAddress);
+        AcesLaunchpadToken launchpadToken = AcesLaunchpadToken(tokenAddress);
         vm.stopPrank();
+
+        uint256 totalSupply = launchpadToken.totalSupply();
+        assertEq(totalSupply, 1 ether); // initial supply from clone
+        console2.log("Total supply: %s", totalSupply);
 
         // Bob buys 10,000 tokens
         vm.startPrank(bob);
@@ -292,7 +298,6 @@ contract FactoryTest is Test {
         factory.buyTokens(tokenAddress, amount, cost);
         uint256 balance = launchpadToken.balanceOf(address(bob));
         assertEq(balance, amount);
-
 
         cost = factory.getSellPriceAfterFee(tokenAddress, 2_000 ether);
         acesToken.approve(address(factory), cost);
@@ -307,7 +312,7 @@ contract FactoryTest is Test {
         // Alice creates token
         vm.startPrank(alice);
         address tokenAddress = factory.createToken(AcesFactory.Curves.Quadratic, CURVE_STEEPNESS, 0, "Aces Launchpad Token", "ACLP", "my-salt", 10_000 ether);
-        AcesToken launchpadToken = AcesToken(tokenAddress);
+        AcesLaunchpadToken launchpadToken = AcesLaunchpadToken(tokenAddress);
         vm.stopPrank();
 
         // Bob buys 10,000 tokens
@@ -322,6 +327,79 @@ contract FactoryTest is Test {
         uint256 charlieBalance = launchpadToken.balanceOf(address(charlie));
         assertEq(charlieBalance, 1 ether);
         
+        vm.stopPrank();
+    }
+
+
+    function test_PriceCalculations() public {
+        uint256 steepness = 100_000_000;
+        uint256 cost = factory.getPriceQuadratic(1 ether, 1 ether, steepness, 0);
+        console2.log("Cost to buy 1 token: %s", cost);
+
+        cost = factory.getPriceQuadratic(1_000 ether, 1 ether, steepness, 0);
+        console2.log("Cost to buy 1_000 tokens: %s", cost);
+
+        cost = factory.getPriceQuadratic(100_000 ether, 1 ether, steepness, 0);
+        console2.log("Cost to buy 100,000 tokens: %s", cost);
+
+        cost = factory.getPriceQuadratic(1_000_000 ether, 1 ether, steepness, 0);
+        console2.log("Cost to buy 1,000,000 tokens: %s", cost);
+
+        cost = factory.getPriceQuadratic(100_000_000 ether, 1 ether, steepness, 0);
+        console2.log("Cost to buy 100,000,000 tokens: %s", cost);
+
+        cost = factory.getPriceQuadratic(1_000_000_000 ether, 1 ether, steepness, 0);
+        console2.log("Cost to buy 1,000,000,000 tokens: %s", cost);
+
+        vm.stopPrank();
+    }
+
+
+    // sending in less than 1 token and no Aces tokens
+    function test_AuditOne_BuyLessThanOneFail() public {
+        uint256 amount = 0.99 ether;
+
+        // Alice creates token
+        vm.startPrank(alice);
+        address tokenAddress = factory.createToken(AcesFactory.Curves.Quadratic, 100_000, 0, "Aces Launchpad Token", "ACLP", "my-salt", 10_000 ether);
+        AcesLaunchpadToken launchpadToken = AcesLaunchpadToken(tokenAddress);
+        vm.stopPrank();
+
+        // Bob buys tokens. Sends in ZERO aces to buy less than 1 launchpad token
+        vm.startPrank(bob);
+        vm.expectRevert("Amount must be at least 1 token");
+        uint256 cost = factory.getBuyPriceAfterFee(tokenAddress, amount);
+
+        acesToken.approve(address(factory), cost);
+        vm.expectRevert("Amount must be at least 1 token");
+        factory.buyTokens(tokenAddress, amount, 0);
+
+        uint256 balance = launchpadToken.balanceOf(address(bob));
+        assertEq(balance, 0);
+
+        console2.log("Bob balance: %s", balance);
+
+        vm.stopPrank();
+    }
+
+    // setting tokensBondedAt to more than max supply minus liquidity pool amount
+    function test_AuditTwo_SetTokenBondedAtMoreThanMaxSupply() public {
+        uint256 amount = 1_500_000_000 ether; // 1.5 billion, more than max supply of 1 billion
+
+        // Alice creates token
+        vm.startPrank(alice);
+        vm.expectRevert("tokensBondedAt exceeds max supply");
+        factory.createToken(AcesFactory.Curves.Quadratic, 100_000, 0, "Aces Launchpad Token", "ACLP", "my-salt", amount);
+        vm.stopPrank();
+    }
+
+    // setting tokensBondedAt to more than max supply minus liquidity pool amount
+    function test_AuditTwo_SetTokenBondedAtExactAmount() public {
+        uint256 amount = 800_000_000 ether; // 800 million, exact amount
+
+        // Alice creates token
+        vm.startPrank(alice);
+        factory.createToken(AcesFactory.Curves.Quadratic, 100_000, 0, "Aces Launchpad Token", "ACLP", "my-salt", amount);
         vm.stopPrank();
     }
 

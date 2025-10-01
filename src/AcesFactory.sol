@@ -19,26 +19,16 @@ interface IERC20 {
     function approve(address spender, uint256 value) external returns (bool);
 }
 
-interface IAerodromeRouter {
-    function quoteAddLiquidity(
-        address tokenA,
-        address tokenB,
-        bool stable,
-        uint amountADesired,
-        uint amountBDesired
-    ) external view returns (uint amountA, uint amountB, uint liquidity);
-
-    function addLiquidity(
+interface IAerodromeLiquidityManager {
+    function addLiquidityWithQuote(
         address tokenA,
         address tokenB,
         bool stable,
         uint amountADesired,
         uint amountBDesired,
-        uint amountAMin,
-        uint amountBMin,
-        address to,
-        uint deadline
-    ) external returns (uint amountA, uint amountB, uint liquidity);
+        uint256 slippageBps,
+        address to
+    ) external returns (uint amountAUsed, uint amountBUsed, uint liquidity);
 }
 
 /**
@@ -48,12 +38,15 @@ interface IAerodromeRouter {
 contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     using FixedMath for int256;
 
+    uint256 public constant MAX_TOTAL_SUPPLY = 1_000_000_000 ether;
+
     address public protocolFeeDestination;
     uint256 public protocolFeePercent;
     uint256 public subjectFeePercent;
-    address public aerodromeRouterAddress;
     address public tokenImplementation;
     address public acesTokenAddress;
+    uint256 public lpAmount;
+    address public liquidityManager; // external manager (preferred)
 
     enum Curves {
         Quadratic,
@@ -96,13 +89,14 @@ contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     event FeeDestinationChanged(address newDestination);
     event ProtocolFeePercentChanged(uint256 newPercent);
     event SubjectFeePercentChanged(uint256 newPercent);
-    event AerodromeRouterAddressChanged(address newAddress);
 
     event SellApprovalChanged(
         address indexed seller,
         address indexed operator,
         bool approved
     );
+
+    uint256[50] private __gap;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -120,7 +114,7 @@ contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         // Set default values for protocol and subject fees
         protocolFeePercent = 500000000000000; // 0.5%
         subjectFeePercent = 500000000000000; // 0.5%
-        aerodromeRouterAddress = 0xcF77a3Ba9A5CA399B7c97c74d54e5b1Beb874E43;
+        lpAmount = 200_000_000 ether; // 200 million tokens
     }
 
     /**
@@ -141,13 +135,21 @@ contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     }
 
     /**
-     * @dev Set the Aerodrome router address. Only callable by the owner.
-     * @param _router The new router address.
+     * @dev Sets the address of the liquidity manager.
+     * @param _manager The address of the liquidity manager contract.
      */
-    function setAerodromeRouterAddress(address _router) external onlyOwner {
-        require(_router != address(0), "Invalid address");
-        aerodromeRouterAddress = _router;
-        emit AerodromeRouterAddressChanged(_router);
+    function setLiquidityManager(address _manager) external onlyOwner {
+        require(_manager != address(0), "Invalid manager");
+        liquidityManager = _manager;
+    }
+
+    /** 
+     * @dev Sets the amount of LP tokens to be allocated.
+     * @param _lpAmount The amount of LP tokens.
+     */
+    function setLpAmount(uint256 _lpAmount) public onlyOwner {
+        require(_lpAmount <= MAX_TOTAL_SUPPLY, "Invalid lp amount");
+        lpAmount = _lpAmount;
     }
 
     /**
@@ -181,7 +183,7 @@ contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         require(acesTokenAddress != address(0), "Aces token address not set");
         require(tokensBondedAt >= 1 ether, "Invalid tokensBondedAt value");
         require(tokenImplementation != address(0), "Token implementation not set");
-        
+        require(tokensBondedAt <= MAX_TOTAL_SUPPLY - lpAmount, "tokensBondedAt exceeds max supply");
         bytes32 saltPacked = keccak256(abi.encodePacked(salt, msg.sender));
         address tokenAddress = Clones.cloneDeterministic(tokenImplementation, saltPacked);
         // initialize clone
@@ -241,7 +243,8 @@ contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      * @dev Withdraws all ETH from the contract to the owner's address.
      */
     function withdrawETH() external onlyOwner {
-        payable(owner()).transfer(address(this).balance);
+        (bool success,) = address(owner()).call{value: address(this).balance}("");
+        require(success, "Failed to refund Ether!");
     }
 
     /**
@@ -251,9 +254,12 @@ contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         require(acesTokenAddress != address(0), "Aces token address not set");
         require(tokenAddress != address(0), "Invalid token address");
         Token storage token = tokens[tokenAddress];
+        require(token.tokenBonded, "Token not bonded yet");
+
         uint256 balance = token.acesTokenBalance;
         require(balance > 0, "No ACES to withdraw");
         token.acesTokenBalance = 0;
+
         require(IERC20(acesTokenAddress).transfer(owner(), balance), "ACES transfer failed");
     }
 
@@ -271,6 +277,12 @@ contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         uint256 steepness,
         uint256 floor
     ) public pure returns (uint256 price) {
+        require(amount >= 1 ether, "Amount must be at least 1 token");
+        require(supply >= 1 ether, "Total supply must be at least 1 token");
+
+        supply = supply / 1 ether;
+        amount = amount / 1 ether;
+
         uint256 sum1 = ((supply - 1) * (supply) * (2 * (supply - 1) + 1)) / 6;
         uint256 sum2 = ((supply - 1 + amount) * (supply + amount) * (2 * (supply - 1 + amount) + 1)) / 6;
         uint256 summation = sum2 - sum1;
@@ -291,6 +303,12 @@ contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         uint256 steepness,
         uint256 floor
     ) public pure returns (uint256 price) {
+        require(amount >= 1 ether, "Amount must be at least 1 token");
+        require(supply >= 1 ether, "Total supply must be at least 1 token");
+
+        supply = supply / 1 ether;
+        amount = amount / 1 ether;
+
         uint256 sum1 = (supply - 1) * supply;
         uint256 sum2 = (supply - 1 + amount) * (supply + amount);
         uint256 summation = sum2 - sum1;
@@ -311,10 +329,7 @@ contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     ) public view returns (uint256 price) {
         AcesLaunchpadToken launchPadToken = AcesLaunchpadToken(tokenAddress);
         uint256 totalSupply = launchPadToken.totalSupply();
-
-        amount = amount / 1 ether;
-        totalSupply = totalSupply / 1 ether;
-
+        
         Token storage r = tokens[tokenAddress];
         uint256 supply = isBuy ? totalSupply : totalSupply - amount;
         uint256 floor = r.floor;
@@ -410,8 +425,6 @@ contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
 
         require(!token.tokenBonded, "Token is bonded, cannot buy more");
 
-        
-
         // Transfer Aces tokens from user to contract
         IERC20 acesToken = IERC20(acesTokenAddress);
         require(
@@ -462,9 +475,32 @@ contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
             );
         }
 
-        if (!token.tokenBonded && totalSupply + amount >= token.tokensBondedAt) {
+        if (!token.tokenBonded && totalSupply + amount >= token.tokensBondedAt && totalSupply + amount <= launchPadToken.MAX_TOTAL_SUPPLY()) {
             token.tokenBonded = true;
+
+            // Mint LP allocation to factory to pair with accrued ACES
+            launchPadToken.mint(address(this), lpAmount);
             launchPadToken.setTransfersEnabled(true);
+
+            uint256 acesForLiquidity = token.acesTokenBalance; // ACES accumulated in bonding curve
+
+            if (liquidityManager != address(0) && acesForLiquidity > 0) {
+                // Approve liquidity manager to pull tokens; use reset to 0 first pattern for safety
+                launchPadToken.approve(liquidityManager, lpAmount);
+                IERC20(acesTokenAddress).approve(liquidityManager, acesForLiquidity);
+
+                // Add liquidity (revert on failure). Volatile pool assumed (stable = false), 50 bps slippage, LP recipient = owner.
+                IAerodromeLiquidityManager(liquidityManager).addLiquidityWithQuote(
+                    tokenAddress,
+                    acesTokenAddress,
+                    false,
+                    lpAmount,
+                    acesForLiquidity,
+                    50,
+                    owner()
+                );
+            }
+
             launchPadToken.renounceOwnership();
             emit BondedToken(tokenAddress, totalSupply + amount);
         }
@@ -478,9 +514,12 @@ contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     function sellTokens(
         address tokenAddress,
         uint256 amount
-    ) public payable {
+    ) public {
         require(amount > 0, "Invalid amount");
         require(tokenAddress != address(0), "Invalid address");
+
+        Token storage token = tokens[tokenAddress];
+        require(!token.tokenBonded, "Token is bonded, cannot sell");
 
         // Transfer Aces tokens from contract to user
         IERC20 acesToken = IERC20(acesTokenAddress);
@@ -505,10 +544,8 @@ contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         uint256 protocolFee = (price * protocolFeePercent) / 1 ether;
         uint256 subjectFee = (price * subjectFeePercent) / 1 ether;
 
-        Token storage token = tokens[tokenAddress];
+        
         token.acesTokenBalance -= price;
-
-        require(!token.tokenBonded, "Token is bonded, cannot sell");
 
         // Burn tokens from user
         launchPadToken.burnFrom(msg.sender, amount);

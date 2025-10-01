@@ -24,14 +24,14 @@ contract BuyLaunchpadToken is Script {
         address tokenAddress = vm.envAddress(tokenEnv);
         console.log("Token Address:", tokenAddress);
 
-        string memory launchpadTokenEnv = string(abi.encodePacked("LAUNCHED_TOKEN_IMPLEMENTATION_", network));
+        string memory launchpadTokenEnv = string(abi.encodePacked("LAUNCHED_TOKEN_ADDRESS_", network));
         address launchpadTokenAddress = vm.envAddress(launchpadTokenEnv);
         console.log("Launchpad Token Address:", launchpadTokenAddress);
 
+       
+
         AcesToken token = AcesToken(tokenAddress);
-
         AcesLaunchpadToken launchpadToken = AcesLaunchpadToken(launchpadTokenAddress);
-
         AcesFactory factory = AcesFactory(proxy);
 
         vm.startBroadcast(deployerPrivateKey);

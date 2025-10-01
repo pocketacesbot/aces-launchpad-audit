@@ -32,6 +32,7 @@ The factory uses ACES tokens as the base currency for all trades and accumulates
 $ forge install foundry-rs/forge-std
 $ forge install OpenZeppelin/openzeppelin-foundry-upgrades
 $ forge install OpenZeppelin/openzeppelin-contracts-upgradeable
+$ forge install OpenZeppelin/openzeppelin-contracts
 ```
 
 ### Deploy to Anvil
@@ -67,3 +68,18 @@ $ forge script script/CreateToken.s.sol --rpc-url sepolia --broadcast -vvvv --ve
 $ forge script script/BuyLaunchpadToken.s.sol --rpc-url sepolia --broadcast -vvvv
 $ forge script script/SendAcesTokens.s.sol --rpc-url sepolia --broadcast -vvvv
 ```
+
+### Audit
+1. Required amount to buy at least 1 token, and supply must be at least 1 token
+2. Added check for amount to be less than launchpad token max total supply
+3. Added check in getPriceQuadratic, getPriceLinear to ensure total supply is at least 1 token to avoid underflow
+4. Added Aerodrome liquidity manager integration to create liquidity pairs on bonding
+5. Added storage gap for upgradeability - https://docs.openzeppelin.com/contracts/4.x/upgradeable#storage_gaps
+6. /* two step ownership transfer */
+7. Upgraded withdrawETH to use call instead of transfer to avoid gas limit issues - https://docs.openzeppelin.com/contracts/4.x/api/utils#Address:sendValue-address-uint256-
+8. Added check in withdrawACES to ensure token is bonded before allowing withdrawal of ACES tokens
+9. /* would disallow smart contract wallets */
+10. /* ownable 2 step */
+11. Removed payable from sellTokens
+12. Inserted liquidity manager address variable and setter function
+13. Removed upgradeTo function to prevent unauthorized upgrades

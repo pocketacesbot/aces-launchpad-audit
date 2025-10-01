@@ -27,7 +27,7 @@ contract SendAcesToken is Script {
 
         vm.startBroadcast(deployerPrivateKey);
 
-        token.transfer(0x4CF99cD1aed51c3B662427fe7693aB9D94daA2E7, 1000000 ether);
+        token.transfer(0x4CF99cD1aed51c3B662427fe7693aB9D94daA2E7, 100_000_000 ether);
 
         vm.stopBroadcast();
 
