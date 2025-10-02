@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.20;
 
-import {FixedMath} from "./FixedMath.sol";
+import {Test, console2} from "forge-std/Test.sol";
 
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
+
 import {OwnableUpgradeable} from "openzeppelin-contracts-upgradeable/contracts/access/OwnableUpgradeable.sol";
 import {Initializable} from "openzeppelin-contracts-upgradeable/contracts/proxy/utils/Initializable.sol";
 import {UUPSUpgradeable} from "openzeppelin-contracts-upgradeable/contracts/proxy/utils/UUPSUpgradeable.sol";
@@ -36,7 +38,7 @@ interface IAerodromeLiquidityManager {
  * @dev A contract for creating and managing tokens for trading keys with various curves.
  */
 contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
-    using FixedMath for int256;
+    using Math for uint256;
 
     uint256 public constant MAX_TOTAL_SUPPLY = 1_000_000_000 ether;
 
@@ -139,7 +141,6 @@ contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
      * @param _manager The address of the liquidity manager contract.
      */
     function setLiquidityManager(address _manager) external onlyOwner {
-        require(_manager != address(0), "Invalid manager");
         liquidityManager = _manager;
     }
 
@@ -253,6 +254,8 @@ contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     function withdrawACES(address tokenAddress) external onlyOwner {
         require(acesTokenAddress != address(0), "Aces token address not set");
         require(tokenAddress != address(0), "Invalid token address");
+
+        // can only withdraw if token is bonded
         Token storage token = tokens[tokenAddress];
         require(token.tokenBonded, "Token not bonded yet");
 
@@ -263,13 +266,27 @@ contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         require(IERC20(acesTokenAddress).transfer(owner(), balance), "ACES transfer failed");
     }
 
+    uint256 constant W = 1e18;
+
+    function _sumSquaresWei(uint256 sWei) internal pure returns (uint256) {
+        // For token index n = sWei / W
+        // Uses staged mulDiv to keep precision and avoid overflow.
+        if (sWei == 0) return 0;
+
+        // t1 = s(s+W)/W
+        uint256 t1 = Math.mulDiv(sWei, sWei + W, W);          // ~ s^2 / W + ...
+        // t2 = t1(2s+W)/W  => s(s+W)(2s+W)/W^2
+        uint256 t2 = Math.mulDiv(t1, 2 * sWei + W, W);
+        // sumSquares = t2 / (6 * W)
+        return Math.mulDiv(t2, 1, 6 * W);
+    }
+
     /**
-     * @dev Calculates the price for a quadratic curve given the supply, amount, steepness, and floor price.
-     * @param supply The current supply of shares.
-     * @param amount The amount of shares to buy.
-     * @param steepness The steepness parameter for the curve.
-     * @param floor The floor price for the shares.
-     * @return price The total price for the shares.
+     * @dev Quadratic pricing:
+     *      Uses the difference of square sums to price a batch buy of `amount` tokens
+     *      starting from current `supply`. Supply & amount are in 1e18 units; we downscale
+     *      to whole tokens for the polynomial, then re-scale with 1e18.
+     *      Formula (conceptual): price = (sum_{k=s}^{s+a-1} k^2)/steepness * 1e18 + floor * a
      */
     function getPriceQuadratic(
         uint256 supply,
@@ -277,16 +294,28 @@ contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         uint256 steepness,
         uint256 floor
     ) public pure returns (uint256 price) {
-        require(amount >= 1 ether, "Amount must be at least 1 token");
-        require(supply >= 1 ether, "Total supply must be at least 1 token");
+        require(amount >= W, "Amount must be at least 1 token");
+        require(supply >= W, "Total supply must be at least 1 token");
+        require(amount % W == 0 && supply % W == 0, "Non-integer token units"); // (optional safety)
 
-        supply = supply / 1 ether;
-        amount = amount / 1 ether;
+        // Indices in wei:
+        // We want sum_{k = n}^{n + a - 1} k^2 where n = supply/W, a = amount/W
+        // Convert range to wei-index endpoints for helper:
+        uint256 startWei = supply;                 // corresponds to n
+        uint256 endWei = supply + amount - W;      // corresponds to n + a - 1
 
-        uint256 sum1 = ((supply - 1) * (supply) * (2 * (supply - 1) + 1)) / 6;
-        uint256 sum2 = ((supply - 1 + amount) * (supply + amount) * (2 * (supply - 1 + amount) + 1)) / 6;
-        uint256 summation = sum2 - sum1;
-        return (summation * 1 ether) / steepness + (floor * amount);
+        // Cumulative sums (using start-1 guard)
+        uint256 sumBefore = _sumSquaresWei(startWei - W); // S(n-1)
+        uint256 sumAfter  = _sumSquaresWei(endWei);       // S(n+a-1)
+        uint256 summation = sumAfter - sumBefore;         // sum k^2 for indices
+
+        // curveComponent = summation * 1e18 / steepness
+        uint256 curveComponent = Math.mulDiv(summation, W, steepness);
+
+        // linearComponent = floor * amountTokens; compute with mulDiv to avoid explicit division
+        uint256 linearComponent = Math.mulDiv(floor, amount, W);
+
+        return curveComponent + linearComponent;
     }
 
     /**
@@ -305,6 +334,7 @@ contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     ) public pure returns (uint256 price) {
         require(amount >= 1 ether, "Amount must be at least 1 token");
         require(supply >= 1 ether, "Total supply must be at least 1 token");
+        require(amount % W == 0 && supply % W == 0, "Non-integer token units");
 
         supply = supply / 1 ether;
         amount = amount / 1 ether;
@@ -499,6 +529,8 @@ contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
                     50,
                     owner()
                 );
+
+                token.acesTokenBalance = 0; // all used for liquidity
             }
 
             launchPadToken.renounceOwnership();

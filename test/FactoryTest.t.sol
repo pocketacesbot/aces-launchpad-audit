@@ -330,7 +330,6 @@ contract FactoryTest is Test {
         vm.stopPrank();
     }
 
-
     function test_PriceCalculations() public {
         uint256 steepness = 100_000_000;
         uint256 cost = factory.getPriceQuadratic(1 ether, 1 ether, steepness, 0);
@@ -344,6 +343,12 @@ contract FactoryTest is Test {
 
         cost = factory.getPriceQuadratic(1_000_000 ether, 1 ether, steepness, 0);
         console2.log("Cost to buy 1,000,000 tokens: %s", cost);
+
+        cost = factory.getPriceQuadratic(10_000_000 ether, 1 ether, steepness, 0);
+        console2.log("Cost to buy 10,000,000 tokens: %s", cost);
+
+        cost = factory.getPriceQuadratic(50_000_000 ether, 1 ether, steepness, 0);
+        console2.log("Cost to buy 50,000,000 tokens: %s", cost);
 
         cost = factory.getPriceQuadratic(100_000_000 ether, 1 ether, steepness, 0);
         console2.log("Cost to buy 100,000,000 tokens: %s", cost);
