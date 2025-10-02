@@ -251,7 +251,7 @@ contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     /**
      * @dev Withdraws all ACES from the contract to the owner's address.
      */
-    function withdrawACES(address tokenAddress) external onlyOwner {
+    function withdrawACES(address tokenAddress, uint256 amount) external onlyOwner {
         require(acesTokenAddress != address(0), "Aces token address not set");
         require(tokenAddress != address(0), "Invalid token address");
 
@@ -259,11 +259,10 @@ contract AcesFactory is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         Token storage token = tokens[tokenAddress];
         require(token.tokenBonded, "Token not bonded yet");
 
-        uint256 balance = token.acesTokenBalance;
-        require(balance > 0, "No ACES to withdraw");
-        token.acesTokenBalance = 0;
+        require(token.acesTokenBalance >= amount, "Insufficient ACES balance in bonding curve");
+        token.acesTokenBalance -= amount;
 
-        require(IERC20(acesTokenAddress).transfer(owner(), balance), "ACES transfer failed");
+        require(IERC20(acesTokenAddress).transfer(owner(), amount), "ACES transfer failed");
     }
 
     uint256 constant W = 1e18;

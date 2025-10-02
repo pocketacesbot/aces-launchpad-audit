@@ -144,7 +144,6 @@ contract FactoryTest is Test {
         AcesLaunchpadToken launchpadToken = AcesLaunchpadToken(tokenAddress);
         vm.stopPrank();
 
-
         // Bob buys 10,000 tokens
         vm.startPrank(bob);
         uint256 cost = factory.getBuyPriceAfterFee(tokenAddress, amount);
@@ -161,7 +160,7 @@ contract FactoryTest is Test {
 
         // Owner withdraws aces
         vm.startPrank(owner);
-        factory.withdrawACES(tokenAddress);
+        factory.withdrawACES(tokenAddress, costMinusFee);
         vm.stopPrank();
 
         assertEq(acesToken.balanceOf(address(factory)), 0);
@@ -181,6 +180,7 @@ contract FactoryTest is Test {
         // Bob buys 6,000 tokens
         vm.startPrank(bob);
         uint256 cost = factory.getBuyPriceAfterFee(tokenAddress, 6_000 ether);
+        uint256 costMinusFee = factory.getPrice(tokenAddress, 6_000 ether, true);
         acesToken.approve(address(factory), cost);
         factory.buyTokens(tokenAddress, 6_000 ether, cost);
         uint256 balance = launchpadToken.balanceOf(address(bob));
@@ -190,6 +190,7 @@ contract FactoryTest is Test {
         // Bob sells 5,000 tokens
         vm.startPrank(bob);
         uint256 sellAmount = 5_000 ether;
+        costMinusFee -= factory.getPrice(tokenAddress, sellAmount, false);
         factory.sellTokens(tokenAddress, sellAmount);
         balance = launchpadToken.balanceOf(address(bob));
         assertEq(balance, 1_000 ether);
@@ -199,6 +200,7 @@ contract FactoryTest is Test {
         vm.startPrank(charlie);
         uint256 charlieBuyAmount = 2_000 ether;
         uint256 charlieCost = factory.getBuyPriceAfterFee(tokenAddress, charlieBuyAmount);
+        costMinusFee += factory.getPrice(tokenAddress, charlieBuyAmount, true);
         acesToken.approve(address(factory), charlieCost);
         factory.buyTokens(tokenAddress, charlieBuyAmount, charlieCost);
         balance = launchpadToken.balanceOf(address(charlie));
@@ -209,6 +211,7 @@ contract FactoryTest is Test {
         vm.startPrank(bob);
         uint256 bobSecondBuyAmount = 7_000 ether;
         uint256 bobSecondCost = factory.getBuyPriceAfterFee(tokenAddress, bobSecondBuyAmount);
+        costMinusFee += factory.getPrice(tokenAddress, bobSecondBuyAmount, true);
         acesToken.approve(address(factory), bobSecondCost);
         factory.buyTokens(tokenAddress, bobSecondBuyAmount, bobSecondCost);
         balance = launchpadToken.balanceOf(address(bob));
@@ -216,7 +219,7 @@ contract FactoryTest is Test {
 
         // Owner withdraws aces
         vm.startPrank(owner);
-        factory.withdrawACES(tokenAddress);
+        factory.withdrawACES(tokenAddress, costMinusFee); // allow for rounding
         vm.stopPrank();
 
         assertEq(acesToken.balanceOf(address(factory)), 0);
